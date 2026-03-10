@@ -44,9 +44,6 @@ services:
         condition: service_started
     networks:
       - hotel_net
-    volumes:
-      - ./backend:/app
-    # No port mapping — internal only, nginx proxies
 
   frontend:
     build:
@@ -56,20 +53,10 @@ services:
         VITE_API_URL: ${VITE_API_URL:-/api}
     container_name: hotel_frontend
     restart: unless-stopped
-    networks:
-      - hotel_net
-
-  nginx:
-    image: nginx:alpine
-    container_name: hotel_nginx
-    restart: unless-stopped
     ports:
       - "80:80"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - backend
-      - frontend
     networks:
       - hotel_net
 
