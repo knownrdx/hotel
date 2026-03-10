@@ -3,12 +3,11 @@ WORKDIR /app
 ARG VITE_API_URL=/api
 ENV VITE_API_URL=$VITE_API_URL
 
-# package.json আলাদা COPY — শুধু dependencies change হলেই npm install চলবে
+# Layer 1: npm deps — শুধু package.json change হলে rebuild
 COPY package*.json ./
-RUN --mount=type=cache,target=/root/.npm \
-    npm install --prefer-offline
+RUN npm install
 
-# Code সবার শেষে
+# Layer 2: Build — code change হলে শুধু এটা
 COPY . .
 RUN npm run build
 
@@ -19,14 +18,12 @@ RUN printf 'server {\n\
     listen 80;\n\
     root /usr/share/nginx/html;\n\
     index index.html;\n\
-\n\
     location /api/ {\n\
         proxy_pass http://backend:8000;\n\
         proxy_set_header Host $host;\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
     }\n\
-\n\
     location / {\n\
         try_files $uri $uri/ /index.html;\n\
     }\n\

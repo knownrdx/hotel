@@ -1,9 +1,5 @@
 version: "3.9"
 
-# BuildKit cache সবসময় active রাখতে
-x-build-args: &buildkit
-  DOCKER_BUILDKIT: "1"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -32,16 +28,14 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-      cache_from:
-        - type=local,src=/tmp/buildcache/backend
-      cache_to:
-        - type=local,dest=/tmp/buildcache/backend,mode=max
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hoteluser}:${POSTGRES_PASSWORD:-hotelpass123}@postgres:5432/${POSTGRES_DB:-hotelhotspot}
       REDIS_URL: redis://redis:6379
       SECRET_KEY: ${SECRET_KEY:-changeme_super_secret_key_here}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@hotel.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,10 +50,6 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-/api}
-      cache_from:
-        - type=local,src=/tmp/buildcache/frontend
-      cache_to:
-        - type=local,dest=/tmp/buildcache/frontend,mode=max
     restart: unless-stopped
     depends_on:
       - backend
