@@ -33,9 +33,11 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hoteluser}:${POSTGRES_PASSWORD:-hotelpass123}@postgres:5432/${POSTGRES_DB:-hotelhotspot}
       REDIS_URL: redis://redis:6379
       SECRET_KEY: ${SECRET_KEY:-changeme_super_secret_key_here}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@hotel.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+    expose:
+      - "8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,6 +53,8 @@ services:
       args:
         VITE_API_URL: ${VITE_API_URL:-/api}
     restart: unless-stopped
+    expose:
+      - "80"
     depends_on:
       - backend
     networks:
