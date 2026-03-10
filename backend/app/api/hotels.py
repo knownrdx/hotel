@@ -202,6 +202,45 @@ async def list_tables(hotel_id: int, db: AsyncSession = Depends(get_db), _=Depen
     return {"tables": await svc.get_tables()}
 
 
+@router.get("/{hotel_id}/mssql-columns/{table_name:path}")
+async def get_table_columns(hotel_id: int, table_name: str, db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
+    result = await db.execute(select(Hotel).where(Hotel.id == hotel_id))
+    hotel = result.scalar_one_or_none()
+    if not hotel:
+        raise HTTPException(404)
+    svc = MSSQLService(hotel_data_dict(hotel))
+    columns = await svc.get_table_columns(table_name)
+    return {"table": table_name, "columns": columns}
+
+
+@router.get("/{hotel_id}/mssql-sample/{table_name:path}")
+async def get_table_sample(hotel_id: int, table_name: str, db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
+    result = await db.execute(select(Hotel).where(Hotel.id == hotel_id))
+    hotel = result.scalar_one_or_none()
+    if not hotel:
+        raise HTTPException(404)
+    svc = MSSQLService(hotel_data_dict(hotel))
+    sample = await svc.get_table_sample(table_name, limit=5)
+    return {"table": table_name, "sample": sample}
+
+
+@router.get("/{hotel_id}/mssql-scan-all")
+async def scan_all_tables(hotel_id: int, db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
+    """Scan ALL tables and return their columns — helps find the right booking table"""
+    result = await db.execute(select(Hotel).where(Hotel.id == hotel_id))
+    hotel = result.scalar_one_or_none()
+    if not hotel:
+        raise HTTPException(404)
+    svc = MSSQLService(hotel_data_dict(hotel))
+    tables = await svc.get_tables()
+    scan_result = []
+    for t in tables:
+        cols = await svc.get_table_columns(t)
+        col_names = [c["name"] for c in cols]
+        scan_result.append({"table": t, "columns": col_names, "column_count": len(col_names)})
+    return {"tables": scan_result}
+
+
 @router.post("/{hotel_id}/test-mikrotik")
 async def test_mikrotik(hotel_id: int, db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
     result = await db.execute(select(Hotel).where(Hotel.id == hotel_id))

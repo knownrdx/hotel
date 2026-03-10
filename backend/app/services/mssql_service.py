@@ -67,6 +67,43 @@ class MSSQLService:
             logger.error(f"get_tables error: {e}")
             return []
 
+    async def get_table_columns(self, table_name: str) -> List[Dict[str, str]]:
+        """Get columns of a specific table with data types"""
+        try:
+            schema, tname = table_name.split('.', 1) if '.' in table_name else ('dbo', table_name)
+            async with await aioodbc.connect(dsn=self._conn_str(), autocommit=True) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("""
+                        SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
+                        FROM INFORMATION_SCHEMA.COLUMNS
+                        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+                        ORDER BY ORDINAL_POSITION
+                    """, schema, tname)
+                    rows = await cur.fetchall()
+                    return [
+                        {"name": r[0], "type": r[1], "max_length": r[2], "nullable": r[3]}
+                        for r in rows
+                    ]
+        except Exception as e:
+            logger.error(f"get_table_columns error: {e}")
+            return []
+
+    async def get_table_sample(self, table_name: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Get sample rows from a table to help identify correct columns"""
+        try:
+            async with await aioodbc.connect(dsn=self._conn_str(), autocommit=True) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"SELECT TOP {limit} * FROM {table_name}")
+                    columns = [desc[0] for desc in cur.description]
+                    rows = await cur.fetchall()
+                    return [
+                        {col: (str(val)[:200] if val is not None else None) for col, val in zip(columns, row)}
+                        for row in rows
+                    ]
+        except Exception as e:
+            logger.error(f"get_table_sample error: {e}")
+            return []
+
     async def get_active_bookings(self) -> List[Dict[str, Any]]:
         h = self.hotel
         table = h.get("mssql_table_booking", "PMS.RRVDATBL")
