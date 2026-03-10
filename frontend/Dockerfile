@@ -3,22 +3,23 @@ WORKDIR /app
 ARG VITE_API_URL=/api
 ENV VITE_API_URL=$VITE_API_URL
 
+# package.json আলাদা COPY — শুধু dependencies change হলেই npm install চলবে
 COPY package*.json ./
-RUN npm install
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --prefer-offline
 
+# Code সবার শেষে
 COPY . .
 RUN npm run build
 
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Write nginx config directly — no volume mount needed
 RUN printf 'server {\n\
     listen 80;\n\
     root /usr/share/nginx/html;\n\
     index index.html;\n\
 \n\
-    # Proxy API requests to backend\n\
     location /api/ {\n\
         proxy_pass http://backend:8000;\n\
         proxy_set_header Host $host;\n\
@@ -26,7 +27,6 @@ RUN printf 'server {\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
     }\n\
 \n\
-    # SPA fallback\n\
     location / {\n\
         try_files $uri $uri/ /index.html;\n\
     }\n\

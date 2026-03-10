@@ -3,6 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Install system dependencies for pyodbc (MSSQL)
+# এই layer cache হবে — শুধু Dockerfile change হলেই rebuild হবে
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg2 \
@@ -19,9 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# requirements.txt আলাদা COPY — শুধু requirements change হলেই pip install চলবে
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
+# Code সবার শেষে — code change হলে শুধু এই layer rebuild হবে
 COPY . .
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

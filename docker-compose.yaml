@@ -1,5 +1,9 @@
 version: "3.9"
 
+# BuildKit cache সবসময় active রাখতে
+x-build-args: &buildkit
+  DOCKER_BUILDKIT: "1"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -28,6 +32,10 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      cache_from:
+        - type=local,src=/tmp/buildcache/backend
+      cache_to:
+        - type=local,dest=/tmp/buildcache/backend,mode=max
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hoteluser}:${POSTGRES_PASSWORD:-hotelpass123}@postgres:5432/${POSTGRES_DB:-hotelhotspot}
@@ -41,7 +49,6 @@ services:
         condition: service_started
     networks:
       - hotel_net
-    # No ports — Coolify handles routing
 
   frontend:
     build:
@@ -49,12 +56,15 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-/api}
+      cache_from:
+        - type=local,src=/tmp/buildcache/frontend
+      cache_to:
+        - type=local,dest=/tmp/buildcache/frontend,mode=max
     restart: unless-stopped
     depends_on:
       - backend
     networks:
       - hotel_net
-    # No ports — Coolify handles routing via label/proxy
 
 volumes:
   postgres_data:
