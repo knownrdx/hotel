@@ -122,6 +122,8 @@ async def update_hotel(hotel_id: int, data: HotelUpdate, db: AsyncSession = Depe
     if not hotel:
         raise HTTPException(404, "Hotel not found")
     for k, v in data.model_dump().items():
+        if k in ("mssql_password", "mikrotik_password") and not v:
+            continue
         setattr(hotel, k, v)
     await db.commit()
     return hotel_to_dict(hotel)
