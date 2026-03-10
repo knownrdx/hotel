@@ -3,7 +3,6 @@ version: "3.9"
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: hotel_postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-hotelhotspot}
@@ -21,7 +20,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: hotel_redis
     restart: unless-stopped
     networks:
       - hotel_net
@@ -30,13 +28,12 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: hotel_backend
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hoteluser}:${POSTGRES_PASSWORD:-hotelpass123}@postgres:5432/${POSTGRES_DB:-hotelhotspot}
       REDIS_URL: redis://redis:6379
       SECRET_KEY: ${SECRET_KEY:-changeme_super_secret_key_here}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:80}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,6 +41,7 @@ services:
         condition: service_started
     networks:
       - hotel_net
+    # No ports — Coolify handles routing
 
   frontend:
     build:
@@ -51,14 +49,12 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-/api}
-    container_name: hotel_frontend
     restart: unless-stopped
-    ports:
-      - "80:80"
     depends_on:
       - backend
     networks:
       - hotel_net
+    # No ports — Coolify handles routing via label/proxy
 
 volumes:
   postgres_data:
