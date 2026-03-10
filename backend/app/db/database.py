@@ -16,10 +16,11 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=As
 
 
 async def init_db():
-    # Retry up to 10 times waiting for postgres
     for attempt in range(10):
         try:
             async with engine.begin() as conn:
+                # Drop all and recreate — safe on fresh deploy
+                await conn.run_sync(Base.metadata.drop_all)
                 await conn.run_sync(Base.metadata.create_all)
             logger.info("Database initialized successfully")
             return
