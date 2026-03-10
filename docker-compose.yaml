@@ -46,8 +46,7 @@ services:
       - hotel_net
     volumes:
       - ./backend:/app
-    ports:
-      - "8000:8000"
+    # No port mapping — internal only, nginx proxies
 
   frontend:
     build:
