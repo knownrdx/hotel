@@ -43,8 +43,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-    # backend শুধু internal — কোনো port expose নেই
-    # frontend nginx এর মাধ্যমে access হবে
 
   frontend:
     build:
@@ -53,6 +51,9 @@ services:
       args:
         VITE_API_URL: /api
     restart: unless-stopped
+    environment:
+      BACKEND_HOST: backend
+      BACKEND_PORT: "8000"
     expose:
       - "80"
     depends_on:
