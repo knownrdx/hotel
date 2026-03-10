@@ -21,15 +21,24 @@ IDS_STATUS_CANCELLED  = 'C'
 ACTIVE_STATUSES = {IDS_STATUS_RESERVED, IDS_STATUS_CHECKED_IN}
 
 
-def make_username(room_number: str, guest_name: str, booking_id: str) -> str:
-    """Generate hotspot username: room{N}_{firstname}"""
-    room = str(room_number).strip().replace(" ", "").lower()
+def make_username(room_number: str, guest_name: str, booking_id: str, hotel_code: str = "") -> str:
+    """
+    Generate hotspot username: GUESTNAME@ROOMNO_HOTELCODE
+    Example: SHEIKH@316_almanarDub
+    """
     name_parts = str(guest_name).strip().split()
-    name = name_parts[0].lower() if name_parts else "guest"
-    # Keep only alphanumeric
-    name = ''.join(c for c in name if c.isalnum())[:10]
-    room_clean = ''.join(c for c in room if c.isalnum())
-    return f"room{room_clean}_{name}"
+    if len(name_parts) >= 2:
+        name = name_parts[-1].upper()   # use last name
+    elif name_parts:
+        name = name_parts[0].upper()
+    else:
+        name = "GUEST"
+    name = ''.join(c for c in name if c.isalnum())[:20]
+    room = ''.join(c for c in str(room_number).strip() if c.isalnum())
+    code = ''.join(c for c in str(hotel_code).strip() if c.isalnum())
+    if code:
+        return f"{name}@{room}_{code}"
+    return f"{name}@{room}"
 
 
 class SyncEngine:
@@ -102,7 +111,8 @@ class SyncEngine:
                     username = make_username(
                         booking.room_number,
                         booking.guest_name,
-                        ext_id
+                        ext_id,
+                        hotel_code=hotel.hotspot_code or ""
                     )
                     password = generate_password()
 

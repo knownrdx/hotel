@@ -76,6 +76,9 @@ class Hotel(Base):
     radius_secret = Column(String(255))
     use_radius = Column(Boolean, default=False)
 
+    # Hotspot username code (e.g. "almanarDub" → SHEIKH@316_almanarDub)
+    hotspot_code = Column(String(50), default="")
+
     # Sync settings
     sync_interval_minutes = Column(Integer, default=5)
     checkout_grace_minutes = Column(Integer, default=0)

@@ -16,6 +16,7 @@ const defaultForm = {
   mikrotik_host: '', mikrotik_port: 8728, mikrotik_username: 'admin', mikrotik_password: '',
   mikrotik_hotspot_server: 'hotspot1', mikrotik_hotspot_profile: 'default',
   radius_host: '', radius_port: 1812, radius_secret: '', use_radius: false,
+  hotspot_code: '',
   sync_interval_minutes: 5, checkout_grace_minutes: 0, auto_sync_enabled: true,
 }
 
@@ -271,6 +272,16 @@ export default function HotelsPage() {
               </Section>
 
               <Section id="sync" title="⚙️ Sync Settings">
+                <div className="md:col-span-2">
+                  <div className="mb-1">
+                    <label className="text-xs text-slate-400 font-medium block mb-1">Hotspot Code <span className="text-slate-600">(username suffix)</span></label>
+                    <input name="hotspot_code" value={form.hotspot_code} onChange={handleChange}
+                      placeholder="almanarDub"
+                      className="w-full bg-dark-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-brand-500"
+                    />
+                    <p className="text-xs text-slate-600 mt-1">Username format: <span className="text-brand-400 font-mono">SHEIKH@316_{form.hotspot_code || 'hotelCode'}</span></p>
+                  </div>
+                </div>
                 <InputField label="Sync Interval (minutes)" name="sync_interval_minutes" value={form.sync_interval_minutes} onChange={handleChange} type="number" />
                 <InputField label="Checkout Grace Period (minutes)" name="checkout_grace_minutes" value={form.checkout_grace_minutes} onChange={handleChange} type="number" />
                 <div className="md:col-span-2 flex items-center gap-3">

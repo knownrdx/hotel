@@ -44,6 +44,8 @@ class HotelCreate(BaseModel):
     radius_port: int = 1812
     radius_secret: Optional[str] = None
     use_radius: bool = False
+    # Hotspot
+    hotspot_code: str = ""
     # Sync
     sync_interval_minutes: int = 5
     checkout_grace_minutes: int = 0
@@ -207,4 +209,5 @@ def _hotel_dict(h: Hotel) -> dict:
         "sync_interval_minutes": h.sync_interval_minutes,
         "checkout_grace_minutes": h.checkout_grace_minutes,
         "auto_sync_enabled": h.auto_sync_enabled,
+        "hotspot_code": h.hotspot_code or "",
     }
