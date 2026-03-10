@@ -1,227 +1,113 @@
-import aioodbc
-from typing import List, Dict, Any, Optional
-from datetime import datetime, date
 import logging
+import aioodbc
+from typing import List, Dict, Any
+from datetime import datetime, date
 
 logger = logging.getLogger(__name__)
 
 
-def decimal_date_to_datetime(val) -> Optional[datetime]:
-    """Convert IDS Next DECIMAL(8,0) date format YYYYMMDD to datetime"""
-    if not val or val == 0:
+def decimal_date_to_datetime(val) -> datetime | None:
+    if not val:
         return None
     try:
         s = str(int(val))
         if len(s) == 8:
-            return datetime(int(s[0:4]), int(s[4:6]), int(s[6:8]))
+            return datetime(int(s[:4]), int(s[4:6]), int(s[6:8]))
     except Exception:
         pass
     return None
 
 
-def decimal_time_to_str(val) -> str:
-    """Convert IDS Next DECIMAL(4,2) time to HH:MM string"""
-    if not val:
-        return "12:00"
-    try:
-        hours = int(val)
-        minutes = int(round((float(val) - hours) * 100))
-        return f"{hours:02d}:{minutes:02d}"
-    except Exception:
-        return "12:00"
+def make_username(room_number: str, guest_name: str, booking_id: str, hotel_code: str = "") -> str:
+    last_name = guest_name.strip().split()[-1].upper() if guest_name.strip() else "GUEST"
+    if hotel_code:
+        return f"{last_name}@{room_number}_{hotel_code}"
+    return f"{last_name}@{room_number}"
 
 
 class MSSQLService:
-    def __init__(self, hotel):
+    def __init__(self, hotel: dict):
         self.hotel = hotel
-        self.conn_str = (
+
+    def _conn_str(self) -> str:
+        return (
             f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-            f"SERVER={hotel.mssql_host},{hotel.mssql_port};"
-            f"DATABASE={hotel.mssql_database};"
-            f"UID={hotel.mssql_username};"
-            f"PWD={hotel.mssql_password};"
+            f"SERVER={self.hotel['mssql_server']},{self.hotel['mssql_port'] or 1433};"
+            f"DATABASE={self.hotel['mssql_database']};"
+            f"UID={self.hotel['mssql_username']};"
+            f"PWD={self.hotel['mssql_password']};"
             f"TrustServerCertificate=yes;"
+            f"Encrypt=yes;"
         )
 
-    async def test_connection(self) -> Dict[str, Any]:
+    async def test_connection(self) -> dict:
         try:
-            async with aioodbc.connect(dsn=self.conn_str) as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute("SELECT 1")
-            return {"success": True, "message": "Connection successful"}
+            async with await aioodbc.connect(dsn=self._conn_str(), autocommit=True) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT @@VERSION")
+                    row = await cur.fetchone()
+                    return {"success": True, "version": str(row[0])[:100] if row else "OK"}
         except Exception as e:
-            return {"success": False, "message": str(e)}
-
-    async def get_confirmed_bookings(self) -> List[Dict[str, Any]]:
-        """
-        IDS Next PMS - fetch confirmed/checked-in reservations.
-        
-        Key tables (PMS schema):
-          - PMS.RRVDATBL : Reservation header (RESNUB, ARRIVL, DEPDAT, RSVSTS, PRPCOD)
-          - PMS.RRVDBTBL : Reservation detail (room, rate, guest link)
-          - PMS.CMCMATBL : Guest contact (SRLNUB → guest master SRLNUB)
-        
-        RSVSTS values: 'R'=Reserved, 'I'=Checked-in, 'O'=Checked-out, 'C'=Cancelled
-        Dates stored as DECIMAL(8,0) = YYYYMMDD
-        """
-        h = self.hotel
-
-        # Use custom query if provided, else use IDS Next default
-        if h.mssql_table_booking and h.mssql_table_booking.strip().upper().startswith("SELECT"):
-            # Custom SQL query stored in mssql_table_booking field
-            query = h.mssql_table_booking
-        else:
-            # Default IDS Next query — fetch Reserved + Checked-In only
-            today_decimal = int(datetime.now().strftime("%Y%m%d"))
-            query = f"""
-                SELECT
-                    A.RESNUB        AS booking_id,
-                    A.PRPCOD        AS property,
-                    A.ARRIVL        AS check_in_dec,
-                    A.DEPDAT        AS check_out_dec,
-                    A.RSVSTS        AS status,
-                    A.NOSADU        AS adults,
-                    A.NOSCHD        AS children,
-                    B.ROOMNO        AS room_number,
-                    B.ROMTYP        AS room_type,
-                    B.RATCOD        AS rate_code,
-                    COALESCE(C.GSTNAM, A.RESNUB) AS guest_name,
-                    COALESCE(M.MBLNUB, M.TELNUB, '') AS guest_phone,
-                    COALESCE(M.MAILID, '')          AS guest_email
-                FROM PMS.RRVDATBL A WITH (NOLOCK)
-                LEFT JOIN PMS.RRVDBTBL B WITH (NOLOCK)
-                    ON A.RESNUB = B.RESNUB AND A.PRPCOD = B.PRPCOD
-                LEFT JOIN PMS.CMGMSTBL C WITH (NOLOCK)
-                    ON A.GSTSRL = C.SRLNUB
-                LEFT JOIN PMS.CMCMATBL M WITH (NOLOCK)
-                    ON C.SRLNUB = M.SRLNUB AND M.ADDTYP = 'P'
-                WHERE A.RSVSTS IN ('R', 'I')
-                AND A.DEPDAT >= {today_decimal}
-                ORDER BY A.ARRIVL, A.RESNUB
-            """
-
-        try:
-            async with aioodbc.connect(dsn=self.conn_str) as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute(query)
-                    columns = [col[0].lower() for col in cursor.description]
-                    rows = await cursor.fetchall()
-                    results = []
-                    for row in rows:
-                        d = dict(zip(columns, row))
-                        # Convert IDS Next decimal dates to ISO strings
-                        for date_col in ['check_in_dec', 'arrivl']:
-                            if date_col in d:
-                                dt = decimal_date_to_datetime(d[date_col])
-                                d['check_in'] = dt.isoformat() if dt else None
-                                del d[date_col]
-                        for date_col in ['check_out_dec', 'depdat']:
-                            if date_col in d:
-                                dt = decimal_date_to_datetime(d[date_col])
-                                d['check_out'] = dt.isoformat() if dt else None
-                                del d[date_col]
-                        # Normalize
-                        d['booking_id'] = str(d.get('booking_id', ''))
-                        d['room_number'] = str(d.get('room_number', '')).strip()
-                        d['guest_name'] = str(d.get('guest_name', '')).strip()
-                        d['guest_phone'] = str(d.get('guest_phone', '')).strip()
-                        d['status'] = str(d.get('status', '')).strip()
-                        results.append(d)
-                    return results
-        except Exception as e:
-            logger.error(f"MSSQL confirmed bookings error for hotel {self.hotel.name}: {e}")
-            raise
-
-    async def get_all_bookings(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """All recent bookings for display in UI"""
-        today_decimal = int(datetime.now().strftime("%Y%m%d"))
-        # Show last 30 days + future
-        past_decimal = int((datetime.now().replace(day=1)).strftime("%Y%m%d"))
-
-        query = f"""
-            SELECT TOP {limit}
-                A.RESNUB        AS booking_id,
-                A.PRPCOD        AS property,
-                A.ARRIVL        AS check_in_dec,
-                A.DEPDAT        AS check_out_dec,
-                A.RSVSTS        AS status,
-                B.ROOMNO        AS room_number,
-                B.ROMTYP        AS room_type,
-                COALESCE(C.GSTNAM, CAST(A.RESNUB AS VARCHAR)) AS guest_name,
-                COALESCE(M.MBLNUB, M.TELNUB, '')  AS guest_phone
-            FROM PMS.RRVDATBL A WITH (NOLOCK)
-            LEFT JOIN PMS.RRVDBTBL B WITH (NOLOCK)
-                ON A.RESNUB = B.RESNUB AND A.PRPCOD = B.PRPCOD
-            LEFT JOIN PMS.CMGMSTBL C WITH (NOLOCK)
-                ON A.GSTSRL = C.SRLNUB
-            LEFT JOIN PMS.CMCMATBL M WITH (NOLOCK)
-                ON C.SRLNUB = M.SRLNUB AND M.ADDTYP = 'P'
-            WHERE A.DEPDAT >= {past_decimal}
-            ORDER BY A.ARRIVL DESC
-        """
-        try:
-            async with aioodbc.connect(dsn=self.conn_str) as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute(query)
-                    columns = [col[0].lower() for col in cursor.description]
-                    rows = await cursor.fetchall()
-                    results = []
-                    for row in rows:
-                        d = dict(zip(columns, row))
-                        # Convert decimal dates
-                        ci = decimal_date_to_datetime(d.get('check_in_dec'))
-                        co = decimal_date_to_datetime(d.get('check_out_dec'))
-                        d['check_in'] = ci.isoformat() if ci else None
-                        d['check_out'] = co.isoformat() if co else None
-                        d.pop('check_in_dec', None)
-                        d.pop('check_out_dec', None)
-                        # Stringify
-                        for k, v in d.items():
-                            if v is None:
-                                d[k] = ''
-                            elif not isinstance(v, str):
-                                d[k] = str(v)
-                        results.append(d)
-                    return results
-        except Exception as e:
-            logger.error(f"MSSQL get_all_bookings error: {e}")
-            raise
+            return {"success": False, "error": str(e)}
 
     async def get_tables(self) -> List[str]:
-        """List tables in PMS schema"""
-        query = """
-            SELECT TABLE_SCHEMA + '.' + TABLE_NAME AS table_name
-            FROM INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_TYPE='BASE TABLE' AND TABLE_SCHEMA = 'PMS'
-            ORDER BY TABLE_NAME
+        """List all tables in the database to help user find correct table name"""
+        try:
+            async with await aioodbc.connect(dsn=self._conn_str(), autocommit=True) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("""
+                        SELECT TABLE_SCHEMA + '.' + TABLE_NAME
+                        FROM INFORMATION_SCHEMA.TABLES
+                        WHERE TABLE_TYPE = 'BASE TABLE'
+                        ORDER BY TABLE_SCHEMA, TABLE_NAME
+                    """)
+                    rows = await cur.fetchall()
+                    return [r[0] for r in rows]
+        except Exception as e:
+            logger.error(f"get_tables error: {e}")
+            return []
+
+    async def get_active_bookings(self) -> List[Dict[str, Any]]:
+        h = self.hotel
+        table = h.get("mssql_table_booking", "PMS.RRVDATBL")
+        col_id = h.get("mssql_col_booking_id", "RESNUB")
+        col_name = h.get("mssql_col_guest_name", "GSTNAM")
+        col_phone = h.get("mssql_col_guest_phone", "MBLNUB")
+        col_room = h.get("mssql_col_room_number", "ROOMNO")
+        col_checkin = h.get("mssql_col_checkin", "ARRIVL")
+        col_checkout = h.get("mssql_col_checkout", "DEPDAT")
+        col_status = h.get("mssql_col_status", "RSVSTS")
+        statuses = [s.strip() for s in h.get("mssql_col_status_confirmed", "R,I").split(",")]
+        status_list = ",".join(f"'{s}'" for s in statuses)
+
+        query = f"""
+            SELECT
+                {col_id}, {col_name}, {col_phone},
+                {col_room}, {col_checkin}, {col_checkout}, {col_status}
+            FROM {table}
+            WHERE {col_status} IN ({status_list})
         """
         try:
-            async with aioodbc.connect(dsn=self.conn_str) as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute(query)
-                    rows = await cursor.fetchall()
-                    return [row[0] for row in rows]
+            async with await aioodbc.connect(dsn=self._conn_str(), autocommit=True) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(query)
+                    rows = await cur.fetchall()
+                    results = []
+                    for row in rows:
+                        results.append({
+                            "booking_id": row[0],
+                            "guest_name": str(row[1] or "").strip(),
+                            "guest_phone": str(row[2] or "").strip(),
+                            "room_number": str(row[3] or "").strip(),
+                            "checkin_date": decimal_date_to_datetime(row[4]),
+                            "checkout_date": decimal_date_to_datetime(row[5]),
+                            "status": str(row[6] or "").strip(),
+                        })
+                    return results
         except Exception as e:
-            logger.error(f"MSSQL get_tables error: {e}")
+            logger.error(f"MSSQL get_active_bookings error: {e}")
             raise
 
-    async def get_columns(self, table_name: str) -> List[str]:
-        """List columns in a table (supports schema.table format)"""
-        parts = table_name.split('.')
-        schema = parts[0] if len(parts) > 1 else 'PMS'
-        tbl = parts[-1]
-        query = """
-            SELECT COLUMN_NAME, DATA_TYPE
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-            ORDER BY ORDINAL_POSITION
-        """
-        try:
-            async with aioodbc.connect(dsn=self.conn_str) as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute(query, schema, tbl)
-                    rows = await cursor.fetchall()
-                    return [f"{row[0]} ({row[1]})" for row in rows]
-        except Exception as e:
-            logger.error(f"MSSQL get_columns error: {e}")
-            raise
+    async def get_all_bookings(self) -> List[Dict[str, Any]]:
+        """For live preview — returns all bookings"""
+        return await self.get_active_bookings()

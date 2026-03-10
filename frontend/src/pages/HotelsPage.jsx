@@ -1,304 +1,296 @@
-import { useEffect, useState } from 'react'
+import { useState, useEffect } from 'react'
 import api from '../lib/api'
-import {
-  Plus, Pencil, Trash2, TestTube, CheckCircle, XCircle,
-  ChevronDown, ChevronUp, RefreshCw, Wifi, Database
-} from 'lucide-react'
+import { Plus, Edit2, Trash2, Wifi, Database, Router, Save, X, Zap, CheckCircle, AlertCircle, Loader, ChevronDown, ChevronUp } from 'lucide-react'
 
-const defaultForm = {
-  name: '', address: '',
-  mssql_host: '', mssql_port: 1433, mssql_database: '', mssql_username: '', mssql_password: '',
-  mssql_table_booking: 'PMS.RRVDATBL', mssql_col_booking_id: 'RESNUB',
-  mssql_col_guest_name: 'GSTNAM', mssql_col_guest_phone: 'MBLNUB',
-  mssql_col_room_number: 'ROOMNO', mssql_col_checkin: 'ARRIVL',
-  mssql_col_checkout: 'DEPDAT', mssql_col_status: 'RSVSTS',
-  mssql_col_status_confirmed: 'R,I',
+const DEFAULT = {
+  name: '', hotspot_code: '',
+  mssql_server: '', mssql_port: 1433, mssql_database: '', mssql_username: '', mssql_password: '',
+  mssql_table_booking: 'PMS.RRVDATBL',
+  mssql_col_booking_id: 'RESNUB', mssql_col_guest_name: 'GSTNAM', mssql_col_guest_phone: 'MBLNUB',
+  mssql_col_room_number: 'ROOMNO', mssql_col_checkin: 'ARRIVL', mssql_col_checkout: 'DEPDAT',
+  mssql_col_status: 'RSVSTS', mssql_col_status_confirmed: 'R,I',
   mikrotik_host: '', mikrotik_port: 8728, mikrotik_username: 'admin', mikrotik_password: '',
-  mikrotik_hotspot_server: 'hotspot1', mikrotik_hotspot_profile: 'default',
-  radius_host: '', radius_port: 1812, radius_secret: '', use_radius: false,
-  hotspot_code: '',
-  sync_interval_minutes: 5, checkout_grace_minutes: 0, auto_sync_enabled: true,
-}
-
-function InputField({ label, name, value, onChange, type = 'text', placeholder = '' }) {
-  return (
-    <div>
-      <label className="text-xs text-slate-400 font-medium block mb-1">{label}</label>
-      <input
-        type={type}
-        name={name}
-        value={value}
-        onChange={onChange}
-        placeholder={placeholder}
-        className="w-full bg-dark-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-brand-500 transition-colors"
-      />
-    </div>
-  )
+  mikrotik_hotspot_server: 'hotspot1', hotspot_password_length: 8,
+  checkout_grace_minutes: 60, sync_enabled: true, sync_interval_minutes: 5,
 }
 
 export default function HotelsPage() {
   const [hotels, setHotels] = useState([])
-  const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [editingId, setEditingId] = useState(null)
-  const [form, setForm] = useState(defaultForm)
-  const [saving, setSaving] = useState(false)
-  const [testing, setTesting] = useState({})
-  const [testResults, setTestResults] = useState({})
-  const [syncing, setSyncing] = useState({})
-  const [expandedSection, setExpandedSection] = useState('basic')
+  const [editing, setEditing] = useState(null)
+  const [form, setForm] = useState(DEFAULT)
+  const [loading, setLoading] = useState(false)
+  const [testResult, setTestResult] = useState({})
+  const [detectResult, setDetectResult] = useState(null)
+  const [detecting, setDetecting] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const fetchHotels = async () => {
+  const load = async () => {
+    const r = await api.get('/hotels/')
+    setHotels(r.data)
+  }
+
+  useEffect(() => { load() }, [])
+
+  const save = async () => {
+    setLoading(true)
     try {
-      const res = await api.get('/hotels/')
-      setHotels(res.data)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => { fetchHotels() }, [])
-
-  const handleChange = (e) => {
-    const { name, value, type, checked } = e.target
-    setForm(f => ({ ...f, [name]: type === 'checkbox' ? checked : value }))
-  }
-
-  const handleEdit = (hotel) => {
-    setEditingId(hotel.id)
-    setForm({ ...defaultForm, ...hotel })
-    setShowForm(true)
-    setExpandedSection('basic')
-  }
-
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setSaving(true)
-    try {
-      if (editingId) {
-        await api.put(`/hotels/${editingId}`, form)
-      } else {
-        await api.post('/hotels/', form)
-      }
-      await fetchHotels()
+      if (editing) await api.put(`/hotels/${editing}`, form)
+      else await api.post('/hotels/', form)
       setShowForm(false)
-      setEditingId(null)
-      setForm(defaultForm)
-    } catch (err) {
-      alert(err.response?.data?.detail || 'Error saving hotel')
-    } finally {
-      setSaving(false)
-    }
+      setEditing(null)
+      setForm(DEFAULT)
+      setDetectResult(null)
+      load()
+    } catch (e) {
+      alert(e.response?.data?.detail || 'Save failed')
+    } finally { setLoading(false) }
   }
 
-  const handleDelete = async (id) => {
-    if (!confirm('Deactivate this hotel?')) return
+  const del = async (id) => {
+    if (!confirm('Delete this hotel?')) return
     await api.delete(`/hotels/${id}`)
-    fetchHotels()
+    load()
   }
 
-  const handleTestMSSQL = async (id) => {
-    setTesting(t => ({ ...t, [`mssql_${id}`]: true }))
-    const res = await api.post(`/hotels/${id}/test-mssql`)
-    setTestResults(r => ({ ...r, [`mssql_${id}`]: res.data }))
-    setTesting(t => ({ ...t, [`mssql_${id}`]: false }))
+  const testMssql = async (id) => {
+    setTestResult(p => ({ ...p, [`mssql_${id}`]: 'loading' }))
+    try {
+      const r = await api.post(`/hotels/${id}/test-mssql`)
+      setTestResult(p => ({ ...p, [`mssql_${id}`]: r.data.success ? 'ok' : 'fail_' + r.data.error }))
+    } catch { setTestResult(p => ({ ...p, [`mssql_${id}`]: 'fail_Connection error' })) }
   }
 
-  const handleTestMikrotik = async (id) => {
-    setTesting(t => ({ ...t, [`mt_${id}`]: true }))
-    const res = await api.post(`/hotels/${id}/test-mikrotik`)
-    setTestResults(r => ({ ...r, [`mt_${id}`]: res.data }))
-    setTesting(t => ({ ...t, [`mt_${id}`]: false }))
+  const testMikrotik = async (id) => {
+    setTestResult(p => ({ ...p, [`mk_${id}`]: 'loading' }))
+    try {
+      const r = await api.post(`/hotels/${id}/test-mikrotik`)
+      setTestResult(p => ({ ...p, [`mk_${id}`]: r.data.success ? 'ok' : 'fail_' + r.data.error }))
+    } catch { setTestResult(p => ({ ...p, [`mk_${id}`]: 'fail_Connection error' })) }
   }
 
-  const handleSync = async (id) => {
-    setSyncing(s => ({ ...s, [id]: true }))
-    await api.post(`/sync/${id}`)
-    setSyncing(s => ({ ...s, [id]: false }))
+  const autoDetect = async () => {
+    if (!editing) return
+    setDetecting(true)
+    setDetectResult(null)
+    try {
+      const r = await api.post(`/hotels/${editing}/auto-detect`)
+      setDetectResult(r.data)
+      if (r.data.success) {
+        // Auto-apply detected values to form
+        const cols = r.data.columns || {}
+        setForm(prev => ({
+          ...prev,
+          mssql_table_booking: r.data.table || prev.mssql_table_booking,
+          mssql_col_booking_id: cols.booking_id || prev.mssql_col_booking_id,
+          mssql_col_guest_name: cols.guest_name || prev.mssql_col_guest_name,
+          mssql_col_guest_phone: cols.guest_phone || prev.mssql_col_guest_phone,
+          mssql_col_room_number: cols.room_number || prev.mssql_col_room_number,
+          mssql_col_checkin: cols.checkin || prev.mssql_col_checkin,
+          mssql_col_checkout: cols.checkout || prev.mssql_col_checkout,
+          mssql_col_status: cols.status || prev.mssql_col_status,
+          mssql_col_status_confirmed: r.data.active_statuses || prev.mssql_col_status_confirmed,
+        }))
+        setShowAdvanced(true)
+      }
+    } catch (e) {
+      setDetectResult({ success: false, error: e.response?.data?.detail || 'Detection failed' })
+    } finally { setDetecting(false) }
   }
 
-  const Section = ({ id, title, children }) => (
-    <div className="border border-slate-700 rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setExpandedSection(expandedSection === id ? null : id)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-slate-800/50 text-sm font-medium text-white hover:bg-slate-800"
-      >
-        {title}
-        {expandedSection === id ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-      </button>
-      {expandedSection === id && (
-        <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">{children}</div>
-      )}
+  const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
+  const inp = (k, label, type = 'text', ph = '') => (
+    <div>
+      <label className="text-xs text-slate-400 mb-1 block">{label}</label>
+      <input type={type} value={form[k] || ''} onChange={e => f(k, type === 'number' ? +e.target.value : e.target.value)}
+        placeholder={ph} className="w-full bg-dark-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500" />
     </div>
   )
 
+  const StatusBadge = ({ k }) => {
+    const v = testResult[k]
+    if (!v) return null
+    if (v === 'loading') return <Loader className="w-4 h-4 animate-spin text-yellow-400" />
+    if (v === 'ok') return <CheckCircle className="w-4 h-4 text-green-400" />
+    return <span className="text-xs text-red-400">{v.replace('fail_', '')}</span>
+  }
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-6 max-w-5xl mx-auto">
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white">Hotels</h1>
-          <p className="text-slate-400 text-sm mt-0.5">Manage hotel connections & Mikrotik settings</p>
+          <p className="text-slate-400 text-sm mt-1">Configure PMS and Mikrotik connections</p>
         </div>
-        <button
-          onClick={() => { setShowForm(true); setEditingId(null); setForm(defaultForm) }}
-          className="flex items-center gap-2 bg-brand-600 hover:bg-brand-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          Add Hotel
+        <button onClick={() => { setShowForm(true); setEditing(null); setForm(DEFAULT); setDetectResult(null) }}
+          className="flex items-center gap-2 bg-brand-600 hover:bg-brand-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          <Plus className="w-4 h-4" /> Add Hotel
         </button>
       </div>
 
-      {/* Hotel list */}
-      <div className="space-y-3">
-        {loading ? (
-          <div className="card p-8 text-center text-slate-500">Loading...</div>
-        ) : hotels.length === 0 ? (
-          <div className="card p-12 text-center">
-            <Wifi className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-            <p className="text-slate-400">No hotels added yet</p>
-            <p className="text-slate-600 text-sm mt-1">Click "Add Hotel" to get started</p>
-          </div>
-        ) : (
-          hotels.map(hotel => (
-            <div key={hotel.id} className="card p-5">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-white">{hotel.name}</h3>
-                    <span className={`text-xs px-2 py-0.5 rounded-full border ${hotel.is_active ? 'badge-active' : 'badge-deleted'}`}>
-                      {hotel.is_active ? 'Active' : 'Inactive'}
-                    </span>
-                    {hotel.auto_sync_enabled && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20">
-                        Auto-sync {hotel.sync_interval_minutes}m
-                      </span>
-                    )}
-                  </div>
-                  {hotel.address && <p className="text-slate-400 text-sm mt-0.5">{hotel.address}</p>}
-                  <div className="flex flex-wrap gap-3 mt-2 text-xs text-slate-500 font-mono">
-                    {hotel.mssql_host && <span className="flex items-center gap-1"><Database className="w-3 h-3" />{hotel.mssql_host}/{hotel.mssql_database}</span>}
-                    {hotel.mikrotik_host && <span className="flex items-center gap-1"><Wifi className="w-3 h-3" />{hotel.mikrotik_host}:{hotel.mikrotik_port}</span>}
-                  </div>
-                  {/* Test results */}
-                  {testResults[`mssql_${hotel.id}`] && (
-                    <div className={`mt-2 text-xs flex items-center gap-1 ${testResults[`mssql_${hotel.id}`].success ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {testResults[`mssql_${hotel.id}`].success ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
-                      MSSQL: {testResults[`mssql_${hotel.id}`].message}
-                    </div>
-                  )}
-                  {testResults[`mt_${hotel.id}`] && (
-                    <div className={`mt-1 text-xs flex items-center gap-1 ${testResults[`mt_${hotel.id}`].success ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {testResults[`mt_${hotel.id}`].success ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
-                      Mikrotik: {testResults[`mt_${hotel.id}`].message}
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button onClick={() => handleTestMSSQL(hotel.id)} disabled={testing[`mssql_${hotel.id}`]} className="p-2 text-slate-400 hover:text-brand-400 hover:bg-slate-800 rounded-lg transition-colors" title="Test MSSQL">
-                    {testing[`mssql_${hotel.id}`] ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4" />}
-                  </button>
-                  <button onClick={() => handleTestMikrotik(hotel.id)} disabled={testing[`mt_${hotel.id}`]} className="p-2 text-slate-400 hover:text-brand-400 hover:bg-slate-800 rounded-lg transition-colors" title="Test Mikrotik">
-                    {testing[`mt_${hotel.id}`] ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Wifi className="w-4 h-4" />}
-                  </button>
-                  <button onClick={() => handleSync(hotel.id)} disabled={syncing[hotel.id]} className="p-2 text-slate-400 hover:text-emerald-400 hover:bg-slate-800 rounded-lg transition-colors" title="Sync now">
-                    <RefreshCw className={`w-4 h-4 ${syncing[hotel.id] ? 'animate-spin text-emerald-400' : ''}`} />
-                  </button>
-                  <button onClick={() => handleEdit(hotel)} className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
-                    <Pencil className="w-4 h-4" />
-                  </button>
-                  <button onClick={() => handleDelete(hotel.id)} className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
+      {/* Hotel Cards */}
+      <div className="space-y-4">
+        {hotels.map(h => (
+          <div key={h.id} className="card p-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-white font-semibold text-lg">{h.name}</h3>
+                <p className="text-slate-400 text-sm">Code: <span className="text-brand-400 font-mono">{h.hotspot_code || '—'}</span></p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => testMssql(h.id)} className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors">
+                  <Database className="w-3.5 h-3.5" /> Test PMS <StatusBadge k={`mssql_${h.id}`} />
+                </button>
+                <button onClick={() => testMikrotik(h.id)} className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors">
+                  <Router className="w-3.5 h-3.5" /> Test Mikrotik <StatusBadge k={`mk_${h.id}`} />
+                </button>
+                <button onClick={() => { setEditing(h.id); setForm(h); setShowForm(true); setDetectResult(null); setShowAdvanced(false) }}
+                  className="p-2 bg-slate-800 hover:bg-brand-600 text-slate-400 hover:text-white rounded-lg transition-colors">
+                  <Edit2 className="w-4 h-4" />
+                </button>
+                <button onClick={() => del(h.id)} className="p-2 bg-slate-800 hover:bg-red-600 text-slate-400 hover:text-white rounded-lg transition-colors">
+                  <Trash2 className="w-4 h-4" />
+                </button>
               </div>
             </div>
-          ))
+            <div className="mt-3 grid grid-cols-3 gap-3 text-xs text-slate-500">
+              <span>PMS: {h.mssql_server || '—'} / {h.mssql_database || '—'}</span>
+              <span>Table: <span className="font-mono text-slate-400">{h.mssql_table_booking}</span></span>
+              <span>Mikrotik: {h.mikrotik_host || '—'}</span>
+            </div>
+          </div>
+        ))}
+        {hotels.length === 0 && (
+          <div className="text-center py-16 text-slate-500">
+            <Wifi className="w-12 h-12 mx-auto mb-3 opacity-30" />
+            <p>No hotels configured yet</p>
+          </div>
         )}
       </div>
 
       {/* Form Modal */}
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-10 bg-black/70 overflow-y-auto">
-          <div className="w-full max-w-2xl card mb-10">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
-              <h2 className="font-semibold text-white">{editingId ? 'Edit Hotel' : 'Add New Hotel'}</h2>
-              <button onClick={() => { setShowForm(false); setEditingId(null) }} className="text-slate-400 hover:text-white">✕</button>
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-dark-800 border border-slate-700 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="sticky top-0 bg-dark-800 border-b border-slate-700 px-6 py-4 flex items-center justify-between rounded-t-2xl">
+              <h2 className="text-lg font-bold text-white">{editing ? 'Edit Hotel' : 'Add Hotel'}</h2>
+              <button onClick={() => { setShowForm(false); setDetectResult(null) }} className="text-slate-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
             </div>
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              <Section id="basic" title="Basic Information">
-                <div className="md:col-span-2">
-                  <InputField label="Hotel Name *" name="name" value={form.name} onChange={handleChange} placeholder="Grand Hotel" />
-                </div>
-                <div className="md:col-span-2">
-                  <InputField label="Address" name="address" value={form.address} onChange={handleChange} placeholder="123 Main St" />
-                </div>
-              </Section>
 
-              <Section id="mssql" title="🗄️ MSSQL Database Connection">
-                <InputField label="Host/IP" name="mssql_host" value={form.mssql_host} onChange={handleChange} placeholder="192.168.1.100" />
-                <InputField label="Port" name="mssql_port" value={form.mssql_port} onChange={handleChange} type="number" />
-                <InputField label="Database Name" name="mssql_database" value={form.mssql_database} onChange={handleChange} placeholder="HotelDB" />
-                <InputField label="Username" name="mssql_username" value={form.mssql_username} onChange={handleChange} placeholder="sa" />
-                <InputField label="Password" name="mssql_password" value={form.mssql_password} onChange={handleChange} type="password" />
-                <InputField label="Booking Table Name" name="mssql_table_booking" value={form.mssql_table_booking} onChange={handleChange} />
-                <InputField label="Column: Booking ID" name="mssql_col_booking_id" value={form.mssql_col_booking_id} onChange={handleChange} />
-                <InputField label="Column: Guest Name" name="mssql_col_guest_name" value={form.mssql_col_guest_name} onChange={handleChange} />
-                <InputField label="Column: Phone" name="mssql_col_guest_phone" value={form.mssql_col_guest_phone} onChange={handleChange} />
-                <InputField label="Column: Room Number" name="mssql_col_room_number" value={form.mssql_col_room_number} onChange={handleChange} />
-                <InputField label="Column: Check-In Date" name="mssql_col_checkin" value={form.mssql_col_checkin} onChange={handleChange} />
-                <InputField label="Column: Check-Out Date" name="mssql_col_checkout" value={form.mssql_col_checkout} onChange={handleChange} />
-                <InputField label="Column: Status" name="mssql_col_status" value={form.mssql_col_status} onChange={handleChange} />
-                <InputField label="Status value for Confirmed" name="mssql_col_status_confirmed" value={form.mssql_col_status_confirmed} onChange={handleChange} placeholder="Confirmed" />
-              </Section>
-
-              <Section id="mikrotik" title="📡 Mikrotik Hotspot">
-                <InputField label="Router IP" name="mikrotik_host" value={form.mikrotik_host} onChange={handleChange} placeholder="192.168.88.1" />
-                <InputField label="API Port" name="mikrotik_port" value={form.mikrotik_port} onChange={handleChange} type="number" />
-                <InputField label="Username" name="mikrotik_username" value={form.mikrotik_username} onChange={handleChange} placeholder="admin" />
-                <InputField label="Password" name="mikrotik_password" value={form.mikrotik_password} onChange={handleChange} type="password" />
-                <InputField label="Hotspot Server Name" name="mikrotik_hotspot_server" value={form.mikrotik_hotspot_server} onChange={handleChange} placeholder="hotspot1" />
-                <InputField label="Default Profile" name="mikrotik_hotspot_profile" value={form.mikrotik_hotspot_profile} onChange={handleChange} placeholder="default" />
-              </Section>
-
-              <Section id="radius" title="🔐 RADIUS (Optional)">
-                <div className="md:col-span-2 flex items-center gap-3">
-                  <input type="checkbox" name="use_radius" checked={form.use_radius} onChange={handleChange} id="use_radius" className="w-4 h-4 accent-brand-500" />
-                  <label htmlFor="use_radius" className="text-sm text-slate-300">Enable RADIUS integration</label>
+            <div className="p-6 space-y-6">
+              {/* Basic */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-slate-300 flex items-center gap-2"><Wifi className="w-4 h-4 text-brand-400" /> Basic Info</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {inp('name', 'Hotel Name', 'text', 'Dubai Hotel')}
+                  {inp('hotspot_code', 'Hotspot Code', 'text', 'dubaiHotel')}
                 </div>
-                <InputField label="RADIUS Host" name="radius_host" value={form.radius_host} onChange={handleChange} />
-                <InputField label="RADIUS Port" name="radius_port" value={form.radius_port} onChange={handleChange} type="number" />
-                <InputField label="Shared Secret" name="radius_secret" value={form.radius_secret} onChange={handleChange} type="password" />
-              </Section>
-
-              <Section id="sync" title="⚙️ Sync Settings">
-                <div className="md:col-span-2">
-                  <div className="mb-1">
-                    <label className="text-xs text-slate-400 font-medium block mb-1">Hotspot Code <span className="text-slate-600">(username suffix)</span></label>
-                    <input name="hotspot_code" value={form.hotspot_code} onChange={handleChange}
-                      placeholder="almanarDub"
-                      className="w-full bg-dark-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-brand-500"
-                    />
-                    <p className="text-xs text-slate-600 mt-1">Username format: <span className="text-brand-400 font-mono">SHEIKH@316_{form.hotspot_code || 'hotelCode'}</span></p>
-                  </div>
-                </div>
-                <InputField label="Sync Interval (minutes)" name="sync_interval_minutes" value={form.sync_interval_minutes} onChange={handleChange} type="number" />
-                <InputField label="Checkout Grace Period (minutes)" name="checkout_grace_minutes" value={form.checkout_grace_minutes} onChange={handleChange} type="number" />
-                <div className="md:col-span-2 flex items-center gap-3">
-                  <input type="checkbox" name="auto_sync_enabled" checked={form.auto_sync_enabled} onChange={handleChange} id="auto_sync" className="w-4 h-4 accent-brand-500" />
-                  <label htmlFor="auto_sync" className="text-sm text-slate-300">Enable automatic sync</label>
-                </div>
-              </Section>
-
-              <div className="flex gap-3 pt-2">
-                <button type="submit" disabled={saving} className="flex-1 bg-brand-600 hover:bg-brand-500 text-white py-2.5 rounded-lg font-medium text-sm transition-colors disabled:opacity-50">
-                  {saving ? 'Saving...' : editingId ? 'Save Changes' : 'Add Hotel'}
-                </button>
-                <button type="button" onClick={() => { setShowForm(false); setEditingId(null) }} className="px-6 bg-slate-800 hover:bg-slate-700 text-white py-2.5 rounded-lg font-medium text-sm transition-colors">
-                  Cancel
-                </button>
               </div>
-            </form>
+
+              {/* MSSQL */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-slate-300 flex items-center gap-2"><Database className="w-4 h-4 text-blue-400" /> PMS Database (MSSQL)</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {inp('mssql_server', 'Server IP / Hostname', 'text', '192.168.1.10')}
+                  {inp('mssql_port', 'Port', 'number', '1433')}
+                  {inp('mssql_database', 'Database Name', 'text', 'NEXT70')}
+                  {inp('mssql_username', 'Username', 'text', 'sa')}
+                </div>
+                {inp('mssql_password', 'Password', 'password')}
+
+                {/* Auto-detect button — only show when editing */}
+                {editing && (
+                  <div className="pt-1">
+                    <button onClick={autoDetect} disabled={detecting}
+                      className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-brand-600 hover:from-purple-500 hover:to-brand-500 text-white py-2.5 rounded-lg text-sm font-medium transition-all disabled:opacity-60">
+                      {detecting ? <><Loader className="w-4 h-4 animate-spin" /> Scanning database...</> : <><Zap className="w-4 h-4" /> Auto-Detect Table & Columns</>}
+                    </button>
+
+                    {detectResult && (
+                      <div className={`mt-3 p-3 rounded-lg border text-sm ${detectResult.success ? 'bg-green-500/10 border-green-500/30 text-green-300' : 'bg-red-500/10 border-red-500/30 text-red-300'}`}>
+                        <div className="flex items-center gap-2 font-medium mb-1">
+                          {detectResult.success ? <CheckCircle className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                          {detectResult.success ? 'Auto-detected & applied!' : 'Could not auto-detect'}
+                        </div>
+                        {detectResult.message && <p className="text-xs opacity-80">{detectResult.message}</p>}
+                        {detectResult.error && <p className="text-xs opacity-80">{detectResult.error}</p>}
+                        {detectResult.all_tables && !detectResult.success && (
+                          <div className="mt-2">
+                            <p className="text-xs mb-1 opacity-70">Found tables — select manually:</p>
+                            <select onChange={e => f('mssql_table_booking', e.target.value)} value={form.mssql_table_booking}
+                              className="w-full bg-dark-900 border border-slate-600 rounded px-2 py-1 text-xs text-white">
+                              {detectResult.all_tables.map(t => <option key={t}>{t}</option>)}
+                            </select>
+                          </div>
+                        )}
+                        {detectResult.status_values?.length > 0 && (
+                          <div className="mt-2 text-xs opacity-70">
+                            Status values found: <span className="font-mono">{detectResult.status_values.join(', ')}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {!editing && (
+                  <p className="text-xs text-slate-500 flex items-center gap-1">
+                    <Zap className="w-3 h-3" /> Save hotel first, then use Auto-Detect to scan your database
+                  </p>
+                )}
+              </div>
+
+              {/* Advanced column mapping */}
+              <div>
+                <button onClick={() => setShowAdvanced(p => !p)}
+                  className="flex items-center gap-2 text-sm text-slate-400 hover:text-white transition-colors w-full">
+                  {showAdvanced ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  Advanced: Column Mapping
+                  <span className="text-xs text-slate-600 ml-1">(auto-filled by detector)</span>
+                </button>
+                {showAdvanced && (
+                  <div className="mt-3 space-y-3 p-4 bg-dark-900 rounded-lg border border-slate-800">
+                    {inp('mssql_table_booking', 'Booking Table', 'text', 'PMS.RRVDATBL')}
+                    <div className="grid grid-cols-2 gap-3">
+                      {inp('mssql_col_booking_id', 'Booking ID Column')}
+                      {inp('mssql_col_guest_name', 'Guest Name Column')}
+                      {inp('mssql_col_guest_phone', 'Phone Column')}
+                      {inp('mssql_col_room_number', 'Room Number Column')}
+                      {inp('mssql_col_checkin', 'Check-in Column')}
+                      {inp('mssql_col_checkout', 'Check-out Column')}
+                      {inp('mssql_col_status', 'Status Column')}
+                      {inp('mssql_col_status_confirmed', 'Active Statuses (comma)', 'text', 'R,I')}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Mikrotik */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-slate-300 flex items-center gap-2"><Router className="w-4 h-4 text-green-400" /> Mikrotik Router</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {inp('mikrotik_host', 'Router IP', 'text', '192.168.88.1')}
+                  {inp('mikrotik_port', 'API Port', 'number', '8728')}
+                  {inp('mikrotik_username', 'Username', 'text', 'admin')}
+                  {inp('mikrotik_password', 'Password', 'password')}
+                  {inp('mikrotik_hotspot_server', 'Hotspot Server Name', 'text', 'hotspot1')}
+                  {inp('hotspot_password_length', 'Password Length', 'number', '8')}
+                </div>
+                {inp('checkout_grace_minutes', 'Delete user after checkout (minutes)', 'number', '60')}
+              </div>
+            </div>
+
+            <div className="sticky bottom-0 bg-dark-800 border-t border-slate-700 px-6 py-4 flex gap-3 rounded-b-2xl">
+              <button onClick={save} disabled={loading}
+                className="flex-1 flex items-center justify-center gap-2 bg-brand-600 hover:bg-brand-500 text-white py-2.5 rounded-lg font-medium transition-colors disabled:opacity-50">
+                <Save className="w-4 h-4" /> {loading ? 'Saving...' : 'Save Hotel'}
+              </button>
+              <button onClick={() => { setShowForm(false); setDetectResult(null) }}
+                className="px-6 bg-slate-700 hover:bg-slate-600 text-white py-2.5 rounded-lg transition-colors">
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

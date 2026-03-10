@@ -1,231 +1,212 @@
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any
 import logging
-
-from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, timezone
 from sqlalchemy import select, and_
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import Hotel, Booking, HotspotUser, SyncLog, HotspotUserStatus, SyncStatus
+from app.db.database import AsyncSessionLocal
+from app.models.models import Hotel, Booking, HotspotUser, SyncLog, HotspotUserStatus
 from app.services.mssql_service import MSSQLService
-from app.services.mikrotik_service import MikrotikService, generate_password
-from app.services.radius_service import RADIUSService
+from app.services.mikrotik_service import MikrotikService
 
 logger = logging.getLogger(__name__)
 
-# IDS Next RSVSTS status codes
-IDS_STATUS_RESERVED   = 'R'
-IDS_STATUS_CHECKED_IN = 'I'
-IDS_STATUS_CHECKED_OUT = 'O'
-IDS_STATUS_CANCELLED  = 'C'
-
-ACTIVE_STATUSES = {IDS_STATUS_RESERVED, IDS_STATUS_CHECKED_IN}
-
-
-def make_username(room_number: str, guest_name: str, booking_id: str, hotel_code: str = "") -> str:
-    """
-    Generate hotspot username: GUESTNAME@ROOMNO_HOTELCODE
-    Example: SHEIKH@316_almanarDub
-    """
-    name_parts = str(guest_name).strip().split()
-    if len(name_parts) >= 2:
-        name = name_parts[-1].upper()   # use last name
-    elif name_parts:
-        name = name_parts[0].upper()
-    else:
-        name = "GUEST"
-    name = ''.join(c for c in name if c.isalnum())[:20]
-    room = ''.join(c for c in str(room_number).strip() if c.isalnum())
-    code = ''.join(c for c in str(hotel_code).strip() if c.isalnum())
-    if code:
-        return f"{name}@{room}_{code}"
-    return f"{name}@{room}"
-
 
 class SyncEngine:
-    def __init__(self, db: AsyncSession):
-        self.db = db
-
-    async def sync_hotel(self, hotel: Hotel) -> Dict[str, Any]:
-        log = SyncLog(hotel_id=hotel.id, status=SyncStatus.pending)
-        self.db.add(log)
-        await self.db.flush()
-
-        created = 0
-        deleted = 0
-        found = 0
-
-        try:
-            # 1. Fetch confirmed/checked-in bookings from MSSQL (IDS Next)
-            mssql = MSSQLService(hotel)
-            bookings_data = await mssql.get_confirmed_bookings()
-            found = len(bookings_data)
-
-            # Track which booking IDs are still active (for cleanup later)
-            active_ext_ids = set()
-
-            # 2. Upsert bookings into local DB
-            for bd in bookings_data:
-                ext_id = str(bd.get("booking_id", "")).strip()
-                if not ext_id:
-                    continue
-
-                active_ext_ids.add(ext_id)
-
-                result = await self.db.execute(
-                    select(Booking).where(
-                        and_(
-                            Booking.hotel_id == hotel.id,
-                            Booking.external_booking_id == ext_id
-                        )
-                    )
-                )
-                booking = result.scalar_one_or_none()
-
-                check_in_str = bd.get("check_in")
-                check_out_str = bd.get("check_out")
-                check_in = datetime.fromisoformat(check_in_str) if check_in_str else None
-                check_out = datetime.fromisoformat(check_out_str) if check_out_str else None
-
-                if not booking:
-                    booking = Booking(
-                        hotel_id=hotel.id,
-                        external_booking_id=ext_id,
-                        guest_name=bd.get("guest_name", ""),
-                        guest_phone=bd.get("guest_phone", ""),
-                        room_number=str(bd.get("room_number", "")),
-                        check_in=check_in,
-                        check_out=check_out,
-                        status=bd.get("status", ""),
-                        raw_data={k: str(v) for k, v in bd.items()}
-                    )
-                    self.db.add(booking)
-                    await self.db.flush()
-                else:
-                    booking.check_out = check_out
-                    booking.check_in = check_in
-                    booking.status = bd.get("status", "")
-                    booking.room_number = str(bd.get("room_number", ""))
-
-                # 3. Create hotspot user if not exists
-                if not booking.hotspot_user:
-                    username = make_username(
-                        booking.room_number,
-                        booking.guest_name,
-                        ext_id,
-                        hotel_code=hotel.hotspot_code or ""
-                    )
-                    password = generate_password()
-
-                    mikrotik = MikrotikService(hotel)
-                    import asyncio
-                    result_mt = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda u=username, p=password, eid=ext_id: mikrotik.create_hotspot_user(
-                            username=u,
-                            password=p,
-                            comment=f"Booking {eid} | {booking.guest_name} | Room {booking.room_number}"
-                        )
-                    )
-
-                    radius_ok = False
-                    if hotel.use_radius and hotel.radius_host:
-                        radius = RADIUSService(hotel)
-                        r_result = radius.add_user(username, password)
-                        radius_ok = r_result.get("success", False)
-
-                    hu = HotspotUser(
-                        hotel_id=hotel.id,
-                        booking_id=booking.id,
-                        username=username,
-                        password=password,
-                        status=HotspotUserStatus.active,
-                        mikrotik_created=result_mt.get("success", False),
-                        radius_created=radius_ok,
-                        extra_info={
-                            "mikrotik_result": result_mt,
-                            "room": booking.room_number,
-                            "guest": booking.guest_name,
-                            "ids_status": bd.get("status", "")
-                        }
-                    )
-                    self.db.add(hu)
-                    if result_mt.get("success"):
-                        created += 1
-
-            # 4. Delete users for bookings no longer active (checkout / cancelled)
-            now = datetime.now(timezone.utc)
-            grace = timedelta(minutes=hotel.checkout_grace_minutes or 0)
-
-            result = await self.db.execute(
-                select(HotspotUser).where(
-                    and_(
-                        HotspotUser.hotel_id == hotel.id,
-                        HotspotUser.status == HotspotUserStatus.active
-                    )
-                )
-            )
-            active_users = result.scalars().all()
-
-            for hu in active_users:
-                should_delete = False
-
-                # Case A: booking's ext_id no longer in active list from PMS
-                if hu.booking and hu.booking.external_booking_id not in active_ext_ids:
-                    should_delete = True
-
-                # Case B: checkout time has passed (with grace)
-                if hu.booking and hu.booking.check_out:
-                    co = hu.booking.check_out
-                    if co.tzinfo is None:
-                        co = co.replace(tzinfo=timezone.utc)
-                    if now > (co + grace):
-                        should_delete = True
-
-                if should_delete:
-                    import asyncio
-                    mikrotik = MikrotikService(hotel)
-                    await asyncio.get_event_loop().run_in_executor(
-                        None, lambda u=hu.username: mikrotik.delete_hotspot_user(u)
-                    )
-                    hu.status = HotspotUserStatus.deleted
-                    hu.deleted_at = now
-                    deleted += 1
-
-            await self.db.commit()
-
-            log.status = SyncStatus.success
-            log.message = f"IDS Next sync OK: {found} bookings, +{created} users, -{deleted} deleted"
-            log.bookings_found = found
-            log.users_created = created
-            log.users_deleted = deleted
-            await self.db.commit()
-
-            return {
-                "success": True,
-                "bookings_found": found,
-                "users_created": created,
-                "users_deleted": deleted
-            }
-
-        except Exception as e:
-            await self.db.rollback()
-            logger.error(f"Sync error for hotel {hotel.name}: {e}", exc_info=True)
-            try:
-                log.status = SyncStatus.failed
-                log.message = str(e)
-                await self.db.commit()
-            except Exception:
-                pass
-            return {"success": False, "error": str(e)}
 
     async def sync_all_hotels(self):
-        result = await self.db.execute(
-            select(Hotel).where(
-                and_(Hotel.is_active == True, Hotel.auto_sync_enabled == True)
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Hotel).where(Hotel.is_active == True, Hotel.sync_enabled == True)
             )
-        )
-        hotels = result.scalars().all()
+            hotels = result.scalars().all()
+
         results = {}
         for hotel in hotels:
-            results[hotel.id] = await self.sync_hotel(hotel)
+            try:
+                results[hotel.id] = await self.sync_hotel_by_id(hotel.id)
+            except Exception as e:
+                logger.error(f"Sync error for hotel id={hotel.id}: {e}", exc_info=True)
+                results[hotel.id] = {"status": "error", "error": str(e)}
         return results
+
+    async def sync_hotel_by_id(self, hotel_id: int):
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Hotel).where(Hotel.id == hotel_id))
+            hotel = result.scalar_one_or_none()
+            if not hotel:
+                return {"status": "error", "error": "Hotel not found"}
+
+            # Copy all needed fields before closing session
+            hotel_data = {
+                "id": hotel.id,
+                "name": hotel.name,
+                "hotspot_code": hotel.hotspot_code,
+                "mssql_server": hotel.mssql_server,
+                "mssql_port": hotel.mssql_port,
+                "mssql_database": hotel.mssql_database,
+                "mssql_username": hotel.mssql_username,
+                "mssql_password": hotel.mssql_password,
+                "mssql_table_booking": hotel.mssql_table_booking,
+                "mssql_col_booking_id": hotel.mssql_col_booking_id,
+                "mssql_col_guest_name": hotel.mssql_col_guest_name,
+                "mssql_col_guest_phone": hotel.mssql_col_guest_phone,
+                "mssql_col_room_number": hotel.mssql_col_room_number,
+                "mssql_col_checkin": hotel.mssql_col_checkin,
+                "mssql_col_checkout": hotel.mssql_col_checkout,
+                "mssql_col_status": hotel.mssql_col_status,
+                "mssql_col_status_confirmed": hotel.mssql_col_status_confirmed,
+                "mikrotik_host": hotel.mikrotik_host,
+                "mikrotik_port": hotel.mikrotik_port,
+                "mikrotik_username": hotel.mikrotik_username,
+                "mikrotik_password": hotel.mikrotik_password,
+                "mikrotik_hotspot_server": hotel.mikrotik_hotspot_server,
+                "hotspot_password_length": hotel.hotspot_password_length,
+                "checkout_grace_minutes": hotel.checkout_grace_minutes,
+            }
+
+        return await self._do_sync(hotel_data)
+
+    async def sync_hotel(self, hotel):
+        """Called with a hotel ORM object — copy data first to avoid greenlet issues"""
+        return await self.sync_hotel_by_id(hotel.id)
+
+    async def _do_sync(self, h: dict):
+        created = 0
+        deleted = 0
+        errors = 0
+        log_messages = []
+
+        try:
+            # 1. Fetch active bookings from MSSQL
+            mssql = MSSQLService(h)
+            bookings = await mssql.get_active_bookings()
+            log_messages.append(f"Fetched {len(bookings)} active bookings from PMS")
+
+            # 2. Upsert bookings into local DB
+            async with AsyncSessionLocal() as db:
+                for b in bookings:
+                    existing = await db.execute(
+                        select(Booking).where(
+                            and_(Booking.hotel_id == h["id"],
+                                 Booking.booking_id == str(b["booking_id"]))
+                        )
+                    )
+                    existing = existing.scalar_one_or_none()
+                    if existing:
+                        existing.guest_name = b.get("guest_name", "")
+                        existing.room_number = str(b.get("room_number", ""))
+                        existing.status = str(b.get("status", ""))
+                        existing.checkin_date = b.get("checkin_date")
+                        existing.checkout_date = b.get("checkout_date")
+                    else:
+                        db.add(Booking(
+                            hotel_id=h["id"],
+                            booking_id=str(b["booking_id"]),
+                            guest_name=b.get("guest_name", ""),
+                            guest_phone=b.get("guest_phone", ""),
+                            room_number=str(b.get("room_number", "")),
+                            status=str(b.get("status", "")),
+                            checkin_date=b.get("checkin_date"),
+                            checkout_date=b.get("checkout_date"),
+                        ))
+                await db.commit()
+
+            # 3. Create hotspot users for active bookings
+            mikrotik = MikrotikService(h)
+            active_booking_ids = set()
+
+            for b in bookings:
+                bid = str(b["booking_id"])
+                active_booking_ids.add(bid)
+
+                async with AsyncSessionLocal() as db:
+                    exists = await db.execute(
+                        select(HotspotUser).where(
+                            and_(HotspotUser.hotel_id == h["id"],
+                                 HotspotUser.booking_id == bid)
+                        )
+                    )
+                    exists = exists.scalar_one_or_none()
+
+                if not exists:
+                    try:
+                        username, password = await mikrotik.create_user(
+                            room_number=str(b.get("room_number", "")),
+                            guest_name=b.get("guest_name", ""),
+                            booking_id=bid,
+                            hotel_code=h["hotspot_code"],
+                        )
+                        async with AsyncSessionLocal() as db:
+                            db.add(HotspotUser(
+                                hotel_id=h["id"],
+                                booking_id=bid,
+                                username=username,
+                                password=password,
+                                room_number=str(b.get("room_number", "")),
+                                guest_name=b.get("guest_name", ""),
+                                status=HotspotUserStatus.active,
+                            ))
+                            await db.commit()
+                        created += 1
+                        log_messages.append(f"Created hotspot user: {username}")
+                    except Exception as e:
+                        errors += 1
+                        log_messages.append(f"Failed to create user for booking {bid}: {e}")
+
+            # 4. Delete users whose bookings are no longer active
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(HotspotUser).where(
+                        and_(HotspotUser.hotel_id == h["id"],
+                             HotspotUser.status == HotspotUserStatus.active)
+                    )
+                )
+                active_users = result.scalars().all()
+                users_to_delete = [
+                    {"id": u.id, "username": u.username, "booking_id": u.booking_id}
+                    for u in active_users
+                    if u.booking_id not in active_booking_ids
+                ]
+
+            for u in users_to_delete:
+                try:
+                    await mikrotik.delete_user(u["username"])
+                    async with AsyncSessionLocal() as db:
+                        result = await db.execute(select(HotspotUser).where(HotspotUser.id == u["id"]))
+                        user = result.scalar_one_or_none()
+                        if user:
+                            user.status = HotspotUserStatus.deleted
+                            await db.commit()
+                    deleted += 1
+                    log_messages.append(f"Deleted hotspot user: {u['username']}")
+                except Exception as e:
+                    errors += 1
+                    log_messages.append(f"Failed to delete user {u['username']}: {e}")
+
+        except Exception as e:
+            logger.error(f"Sync failed for hotel {h['name']}: {e}", exc_info=True)
+            errors += 1
+            log_messages.append(f"Sync error: {e}")
+
+        # 5. Save sync log
+        async with AsyncSessionLocal() as db:
+            db.add(SyncLog(
+                hotel_id=h["id"],
+                status="success" if errors == 0 else "partial" if (created + deleted) > 0 else "error",
+                bookings_synced=len(bookings) if 'bookings' in dir() else 0,
+                users_created=created,
+                users_deleted=deleted,
+                errors=errors,
+                message="\n".join(log_messages[-20:]),
+            ))
+            await db.commit()
+
+        return {
+            "status": "success" if errors == 0 else "error",
+            "created": created,
+            "deleted": deleted,
+            "errors": errors,
+        }
+
+
+sync_engine = SyncEngine()
