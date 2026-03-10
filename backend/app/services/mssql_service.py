@@ -38,6 +38,7 @@ class MSSQLService:
             f"PWD={self.hotel['mssql_password']};"
             f"TrustServerCertificate=yes;"
             f"Encrypt=yes;"
+            f"Connection Timeout=30;"
         )
 
     async def test_connection(self) -> dict:
@@ -103,6 +104,63 @@ class MSSQLService:
         except Exception as e:
             logger.error(f"get_table_sample error: {e}")
             return []
+
+    async def scan_all_tables(self) -> List[Dict[str, Any]]:
+        """Get ALL tables with their columns in ONE single query — fast!"""
+        try:
+            async with await aioodbc.connect(dsn=self._conn_str(), autocommit=True) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("""
+                        SELECT
+                            t.TABLE_SCHEMA + '.' + t.TABLE_NAME AS full_table,
+                            STRING_AGG(c.COLUMN_NAME, ',') WITHIN GROUP (ORDER BY c.ORDINAL_POSITION) AS columns,
+                            COUNT(c.COLUMN_NAME) AS col_count
+                        FROM INFORMATION_SCHEMA.TABLES t
+                        JOIN INFORMATION_SCHEMA.COLUMNS c
+                            ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME
+                        WHERE t.TABLE_TYPE = 'BASE TABLE'
+                        GROUP BY t.TABLE_SCHEMA, t.TABLE_NAME
+                        ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME
+                    """)
+                    rows = await cur.fetchall()
+                    return [
+                        {
+                            "table": row[0],
+                            "columns": row[1].split(',') if row[1] else [],
+                            "column_count": row[2]
+                        }
+                        for row in rows
+                    ]
+        except Exception as e:
+            logger.error(f"scan_all_tables error: {e}")
+            # Fallback: if STRING_AGG not supported (older SQL Server)
+            try:
+                async with await aioodbc.connect(dsn=self._conn_str(), autocommit=True) as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute("""
+                            SELECT
+                                t.TABLE_SCHEMA + '.' + t.TABLE_NAME AS full_table,
+                                c.COLUMN_NAME
+                            FROM INFORMATION_SCHEMA.TABLES t
+                            JOIN INFORMATION_SCHEMA.COLUMNS c
+                                ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME
+                            WHERE t.TABLE_TYPE = 'BASE TABLE'
+                            ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION
+                        """)
+                        rows = await cur.fetchall()
+                        tables_dict = {}
+                        for row in rows:
+                            tbl = row[0]
+                            if tbl not in tables_dict:
+                                tables_dict[tbl] = []
+                            tables_dict[tbl].append(row[1])
+                        return [
+                            {"table": tbl, "columns": cols, "column_count": len(cols)}
+                            for tbl, cols in tables_dict.items()
+                        ]
+            except Exception as e2:
+                logger.error(f"scan_all_tables fallback error: {e2}")
+                return []
 
     async def get_active_bookings(self) -> List[Dict[str, Any]]:
         h = self.hotel

@@ -119,7 +119,7 @@ export default function HotelsPage() {
     setColMapping({})
     setTableSearch('')
     try {
-      const r = await api.get(`/hotels/${editing}/mssql-scan-all`)
+      const r = await api.get(`/hotels/${editing}/mssql-scan-all`, { timeout: 60000 })
       setAllTables(r.data.tables || [])
     } catch (e) {
       alert('Failed to scan: ' + (e.response?.data?.detail || e.message))
@@ -132,8 +132,8 @@ export default function HotelsPage() {
     setColMapping({})
     try {
       const [colRes, sampleRes] = await Promise.all([
-        api.get(`/hotels/${editing}/mssql-columns/${tableName}`),
-        api.get(`/hotels/${editing}/mssql-sample/${tableName}`)
+        api.get(`/hotels/${editing}/mssql-columns`, { params: { table_name: tableName } }),
+        api.get(`/hotels/${editing}/mssql-sample`, { params: { table_name: tableName } })
       ])
       setTableColumns(colRes.data.columns || [])
       setTableSample(sampleRes.data.sample || [])
@@ -415,7 +415,6 @@ export default function HotelsPage() {
                           selectedTable === t.table ? 'bg-brand-600/20 border-l-2 border-l-brand-400' : ''
                         }`}>
                         <div className="text-xs font-mono text-white truncate">{t.table}</div>
-                        <div className="text-xs text-slate-500 mt-0.5">{t.column_count} columns</div>
                       </button>
                     ))
                   )}

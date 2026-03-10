@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
@@ -202,8 +202,8 @@ async def list_tables(hotel_id: int, db: AsyncSession = Depends(get_db), _=Depen
     return {"tables": await svc.get_tables()}
 
 
-@router.get("/{hotel_id}/mssql-columns/{table_name:path}")
-async def get_table_columns(hotel_id: int, table_name: str, db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
+@router.get("/{hotel_id}/mssql-columns")
+async def get_table_columns(hotel_id: int, table_name: str = Query(...), db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
     result = await db.execute(select(Hotel).where(Hotel.id == hotel_id))
     hotel = result.scalar_one_or_none()
     if not hotel:
@@ -213,8 +213,8 @@ async def get_table_columns(hotel_id: int, table_name: str, db: AsyncSession = D
     return {"table": table_name, "columns": columns}
 
 
-@router.get("/{hotel_id}/mssql-sample/{table_name:path}")
-async def get_table_sample(hotel_id: int, table_name: str, db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
+@router.get("/{hotel_id}/mssql-sample")
+async def get_table_sample(hotel_id: int, table_name: str = Query(...), db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
     result = await db.execute(select(Hotel).where(Hotel.id == hotel_id))
     hotel = result.scalar_one_or_none()
     if not hotel:
@@ -226,19 +226,14 @@ async def get_table_sample(hotel_id: int, table_name: str, db: AsyncSession = De
 
 @router.get("/{hotel_id}/mssql-scan-all")
 async def scan_all_tables(hotel_id: int, db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
-    """Scan ALL tables and return their columns — helps find the right booking table"""
+    """Just get table list — fast. Columns loaded on-demand per table."""
     result = await db.execute(select(Hotel).where(Hotel.id == hotel_id))
     hotel = result.scalar_one_or_none()
     if not hotel:
         raise HTTPException(404)
     svc = MSSQLService(hotel_data_dict(hotel))
     tables = await svc.get_tables()
-    scan_result = []
-    for t in tables:
-        cols = await svc.get_table_columns(t)
-        col_names = [c["name"] for c in cols]
-        scan_result.append({"table": t, "columns": col_names, "column_count": len(col_names)})
-    return {"tables": scan_result}
+    return {"tables": [{"table": t, "columns": [], "column_count": 0} for t in tables]}
 
 
 @router.post("/{hotel_id}/test-mikrotik")
