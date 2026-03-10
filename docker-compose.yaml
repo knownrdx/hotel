@@ -1,0 +1,82 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hotel_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hotelhotspot}
+      POSTGRES_USER: ${POSTGRES_USER:-hoteluser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hotelpass123}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - hotel_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hoteluser}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: hotel_redis
+    restart: unless-stopped
+    networks:
+      - hotel_net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: hotel_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hoteluser}:${POSTGRES_PASSWORD:-hotelpass123}@postgres:5432/${POSTGRES_DB:-hotelhotspot}
+      REDIS_URL: redis://redis:6379
+      SECRET_KEY: ${SECRET_KEY:-changeme_super_secret_key_here}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:80}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - hotel_net
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}
+    container_name: hotel_frontend
+    restart: unless-stopped
+    networks:
+      - hotel_net
+
+  nginx:
+    image: nginx:alpine
+    container_name: hotel_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - hotel_net
+
+volumes:
+  postgres_data:
+
+networks:
+  hotel_net:
+    driver: bridge
