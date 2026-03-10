@@ -1,21 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import logging
 
 from app.core.config import settings
 from app.db.database import init_db, AsyncSessionLocal
 from app.core.scheduler import start_scheduler, stop_scheduler
 from app.api import auth, hotels, operations
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     await init_db()
     await seed_admin()
     start_scheduler()
     yield
-    # Shutdown
     stop_scheduler()
 
 
@@ -24,20 +25,38 @@ async def seed_admin():
     from app.models.models import AppUser, UserRole
     from app.core.auth import get_password_hash
 
+    # Try env vars first, fallback to defaults
+    admin_email = settings.ADMIN_EMAIL or "admin@hotel.com"
+    admin_password = settings.ADMIN_PASSWORD or "admin123"
+
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(AppUser).where(AppUser.email == settings.ADMIN_EMAIL)
-        )
-        if not result.scalar_one_or_none():
-            admin = AppUser(
-                email=settings.ADMIN_EMAIL,
-                hashed_password=get_password_hash(settings.ADMIN_PASSWORD),
-                full_name="Administrator",
-                role=UserRole.admin,
-                is_active=True
+        try:
+            result = await db.execute(
+                select(AppUser).where(AppUser.email == admin_email)
             )
-            db.add(admin)
-            await db.commit()
+            existing = result.scalar_one_or_none()
+
+            if not existing:
+                admin = AppUser(
+                    email=admin_email,
+                    hashed_password=get_password_hash(admin_password),
+                    full_name="Administrator",
+                    role=UserRole.admin,
+                    is_active=True
+                )
+                db.add(admin)
+                await db.commit()
+                logger.info(f"Admin user created: {admin_email}")
+            else:
+                # Always update password on startup so env change takes effect
+                existing.hashed_password = get_password_hash(admin_password)
+                existing.is_active = True
+                await db.commit()
+                logger.info(f"Admin user updated: {admin_email}")
+
+        except Exception as e:
+            logger.error(f"seed_admin error: {e}")
+            await db.rollback()
 
 
 app = FastAPI(
@@ -48,7 +67,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
+    allow_origins=["*"],  # Coolify handles SSL/domain, allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,4 +80,8 @@ app.include_router(operations.router, prefix="/api")
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "app": settings.APP_NAME}
+    return {
+        "status": "ok",
+        "app": settings.APP_NAME,
+        "admin_email": settings.ADMIN_EMAIL or "admin@hotel.com"
+    }
