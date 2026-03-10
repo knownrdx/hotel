@@ -8,12 +8,13 @@ COPY . .
 RUN npm run build
 
 FROM nginx:alpine
+# Remove default nginx site
+RUN rm -f /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Use a startup script to dynamically set backend host
+# Entrypoint script generates nginx config dynamically
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
-COPY nginx.template.conf /etc/nginx/nginx.template.conf
 
 ENV BACKEND_HOST=backend
 ENV BACKEND_PORT=8000
